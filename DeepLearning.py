@@ -1,136 +1,162 @@
+#PROGRAMA (HIPERPARAMETROS AÑADIDOS)(PRUEBA N4)
+#DAVID ALEJANDRO PARDO CONTRERAS
+#MICHAEL LISKER
+
 import os
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import tensorflow as tf
-from tensorflow import keras
+import matplotlib.pyplot as plt
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Flatten, Dropout
+from tensorflow.keras.layers import Dense, Flatten, Dropout, Input, Conv2D, MaxPooling2D
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split
+from keras_tuner import RandomSearch
+from tensorflow.keras.regularizers import l2
 import zipfile
-import requests
-from io import BytesIO
-from PIL import Image
-import random
-import matplotlib.pyplot as plt
+import pathlib
+from sklearn.model_selection import train_test_split
 
-# Diccionario de etiquetas basado en GitHub
-label_mapping = {
-    "bart_simpson": 0,
-    "charles_montgomery_burns": 1,
-    "homer_simpson": 2,
-    "krusty_the_clown": 3,
-    "lisa_simpson": 4,
-    "marge_simpson": 5,
-    "milhouse_van_houten": 6,
-    "moe_szyslak": 7,
-    "ned_flanders": 8,
-    "principal_skinner": 9
-}
+# 1️⃣ Descomprimir los datasets
+with zipfile.ZipFile('/content/train.zip', 'r') as zip_ref:
+    zip_ref.extractall('/Simpsons/DATOS')
 
-# Función para cargar imágenes y etiquetas con depuración
-def load_images_labels(data_path):
-    images, labels = [], []
-    for label in os.listdir(data_path):
-        label_path = os.path.join(data_path, label)
-        if os.path.isdir(label_path) and label in label_mapping:
-            print(f"Cargando imágenes de la clase: {label}")
-            for img_name in os.listdir(label_path):
-                img_path = os.path.join(label_path, img_name)
-                try:
-                    img = Image.open(img_path).convert("L")  # Convertir a escala de grises
-                    img = img.resize((28, 28))  # Redimensionar a 28x28
-                    images.append(np.array(img))
-                    labels.append(label_mapping[label])
-                except Exception as e:
-                    print(f"Error cargando imagen {img_path}: {e}")
-    return np.array(images), np.array(labels)
+# 2️⃣ Definir directorio de datos
+data_dir = pathlib.Path("/Simpsons/DATOS/train")
 
-# Directorios donde están los datos extraídos
-train_data_path = "C:/Users/mclis/Downloads/grayscale-train/train"  # Reemplazar con la ruta real
-test_data_path = "C:/Users/mclis/Downloads/grayscale-test/test"  # Reemplazar con la ruta real
+# 3️⃣ Definir nombres de clases manualmente
+class_names = [
+    "bart_simpson", "charles_montgomery_burns", "homer_simpson",
+    "krusty_the_clown", "lisa_simpson", "marge_simpson",
+    "milhouse_van_houten", "moe_szyslak", "ned_flanders", "principal_skinner"
+]
 
-# Cargar datos
-X_train, y_train = load_images_labels(train_data_path)
-X_test, y_test = load_images_labels(test_data_path)
+# 4️⃣ Cargar dataset utilizando image_dataset_from_directory
+batch_size = 256             #<----- Incrementar el tamaño del batch
+img_size = (28, 28)            #<----- Mantener el tamaño de las imágenes 
 
-# Normalizar imágenes
-X_train = X_train.reshape(-1, 28, 28, 1) / 255.0
-X_test = X_test.reshape(-1, 28, 28, 1) / 255.0
+train_ds = tf.keras.utils.image_dataset_from_directory(
+    data_dir,
+    validation_split=0.2,
+    subset="training",
+    seed=123,
+    image_size=img_size,       
+    batch_size=batch_size,    
+    color_mode="grayscale",
+    label_mode="int",
+    class_names=class_names  # Especificar class_names para asegurar solo 10 clases
+)
 
-# Dividir Train en Train/Validation (80%-20%)
-X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42, stratify=y_train)
+val_ds = tf.keras.utils.image_dataset_from_directory(
+    data_dir,
+    validation_split=0.2,
+    subset="validation",
+    seed=123,
+    image_size=img_size,
+    batch_size=batch_size,
+    color_mode="grayscale",
+    label_mode="int",
+    class_names=class_names  # Especificar class_names para asegurar solo 10 clases
+)
 
-# Convertir etiquetas a One-Hot Encoding
-num_classes = len(label_mapping)
-y_train = to_categorical(y_train, num_classes)
-y_val = to_categorical(y_val, num_classes)
-y_test = to_categorical(y_test, num_classes)
+# Verificar etiquetas asignadas
+print("Clases detectadas:", train_ds.class_names)
 
-# Crear el modelo MLP
+# Normalización de los valores de píxeles (0-255 → 0-1)
+def normalize(image, label):
+    return image / 255.0, label
+
+train_ds = train_ds.map(normalize)
+val_ds = val_ds.map(normalize)
+
+# Verificar el contenido de los datasets
+print(f"Tamaño del dataset de entrenamiento: {len(train_ds)}")
+print(f"Tamaño del dataset de validación: {len(val_ds)}")
+
+# Definir el modelo MLP
 model = Sequential([
-    Flatten(input_shape=(28, 28, 1)),
-    Dense(512, activation='relu'),
+    Input(shape=(28, 28, 1)),
+    Conv2D(32, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Conv2D(64, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Flatten(),
+    Dense(512, activation='relu', kernel_regularizer=l2(0.001)),  # Incrementar el número de unidades
+    Dropout(0.2),  # Ajustar la tasa de dropout
+    Dense(256, activation='relu', kernel_regularizer=l2(0.001)),
     Dropout(0.2),
-    Dense(256, activation='relu'),
-    Dropout(0.2),
-    Dense(num_classes, activation='softmax')
+    Dense(10, activation='softmax')
 ])
 
-# Compilar el modelo
-model.compile(optimizer=Adam(learning_rate=0.005), 
-              loss='categorical_crossentropy', 
+model.compile(optimizer=Adam(learning_rate=0.0003),  # Ajustar la tasa de aprendizaje
+              loss='sparse_categorical_crossentropy',
               metrics=['accuracy'])
 
-# Entrenar el modelo
-epochs = 30
-batch_size = 64
-history = model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=batch_size)
+# Entrenar el modelo con manejo de errores y verbose para ver progreso
+epochs = 70
+try:
+    history = model.fit(train_ds, validation_data=val_ds, epochs=epochs, verbose=1)
+except Exception as e:
+    print(f"Error durante el entrenamiento: {e}")
 
-# Evaluar el modelo en test
-test_loss, test_acc = model.evaluate(X_test, y_test)
-print(f'Test Accuracy: {test_acc * 100:.2f}%')
+# Graficar resultados si el entrenamiento fue exitoso
+if 'history' in locals():
+    def plot_history(history):
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['accuracy'], label='Train Accuracy')
+        plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history['loss'], label='Train Loss')
+        plt.plot(history.history['val_loss'], label='Validation Loss')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.show()
 
-# Graficar pérdida y precisión
-def plot_history(history):
-    plt.figure(figsize=(12, 5))
-    
-    # Gráfica de precisión
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['accuracy'], label='Train Accuracy')
-    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    # Gráfica de pérdida
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['loss'], label='Train Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    plt.show()
+    plot_history(history)
 
-plot_history(history)
+# 3️⃣ Herramienta de selección de hiperparámetros
+def build_model(hp):
+    model = Sequential()
+    model.add(Input(shape=(28, 28, 1)))
+    model.add(Flatten())
+    for i in range(hp.Int('num_layers', 1, 3)):
+        model.add(Dense(units=hp.Int('units_' + str(i), 64, 2048, step=64),  # Ajustar el rango de unidades
+                        activation='relu',
+                        kernel_regularizer=l2(0.001)))
+        model.add(Dropout(rate=hp.Float('dropout_' + str(i), 0.1, 0.4, step=0.1)))  # Ajustar el rango de dropout
+    model.add(Dense(10, activation='softmax'))
+    model.compile(optimizer=Adam(learning_rate=hp.Float('learning_rate', 1e-5, 1e-3, sampling='LOG')),  # Ajustar el rango de tasa de aprendizaje
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
+    return model
 
-# Seleccionar una imagen aleatoria del conjunto de test
-random_index = random.randint(0, len(X_test) - 1)
-test_image = X_test[random_index]
-true_label = np.argmax(y_test[random_index])  # Obtener la etiqueta verdadera
+tuner = RandomSearch(build_model,
+                     objective='val_accuracy',
+                     max_trials=10,  # Aumentar el número de pruebas
+                     executions_per_trial=3,  # Aumentar el número de ejecuciones por prueba
+                     directory='my_dir',
+                     project_name='simpsons_mlp')
 
-# Hacer la predicción
-predicted_probs = model.predict(test_image.reshape(1, 28, 28, 1))  # Redimensionar para que sea un batch
-predicted_label = np.argmax(predicted_probs)  # Obtener la clase con mayor probabilidad
+tuner.search_space_summary()
 
-# Mapeo de etiquetas inverso (para mostrar nombres en lugar de números)
-label_mapping_inv = {v: k for k, v in label_mapping.items()}
+tuner.search(train_ds, epochs=20, validation_data=val_ds)  # Aumentar el número de épocas
 
-# Mostrar la imagen con la predicción
-plt.imshow(test_image.reshape(28, 28), cmap="gray")
-plt.title(f"Predicción: {label_mapping_inv[predicted_label]}\nEtiqueta real: {label_mapping_inv[true_label]}")
-plt.axis("off")
-plt.show()
+tuner.results_summary()
+
+best_model = tuner.get_best_models(num_models=1)[0]
+
+# Entrenar el mejor modelo con los datos de entrenamiento y validación y verbose
+best_model.summary()
+history = best_model.fit(train_ds, validation_data=val_ds, epochs=70, verbose=1)
+
+# Evaluar el modelo en el conjunto de prueba (test)
+test_loss, test_acc = best_model.evaluate(val_ds)
+print(f'\nTest Accuracy: {test_acc}')
+
+# Graficar resultados finales
+if 'history' in locals():
+    plot_history(history)
